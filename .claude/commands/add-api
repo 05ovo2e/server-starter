@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+
+# FastAPI 엔드포인트 추가 커맨드
+# 사용법: add-api <endpoint_name> <method> <description>
+# 예: add-api users POST "사용자 생성 엔드포인트"
+
+set -e
+
+# 색상 정의
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# 프로젝트 루트 디렉토리
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# 함수: 에러 출력
+error() {
+    echo -e "${RED}❌ 오류: $1${NC}" >&2
+    exit 1
+}
+
+# 함수: 성공 메시지
+success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
+# 함수: 정보 메시지
+info() {
+    echo -e "${BLUE}ℹ $1${NC}"
+}
+
+# 함수: 경고 메시지
+warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
+
+# 입력값 검증
+if [ $# -lt 3 ]; then
+    error "사용법: add-api <endpoint_name> <method> <description>\n예: add-api users POST '사용자 생성'"
+fi
+
+ENDPOINT_NAME="$1"
+HTTP_METHOD="$2"
+DESCRIPTION="$3"
+
+# HTTP 메서드 검증
+case "$HTTP_METHOD" in
+    GET|POST|PUT|DELETE|PATCH)
+        ;;
+    *)
+        error "지원하지 않는 HTTP 메서드: $HTTP_METHOD (GET, POST, PUT, DELETE, PATCH 중 선택)"
+        ;;
+esac
+
+# endpoint_name을 snake_case로 정규화
+ENDPOINT_NAME=$(echo "$ENDPOINT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/-/_/g')
+
+# 스키마 클래스명 (PascalCase)
+SCHEMA_CLASS=$(echo "$ENDPOINT_NAME" | sed 's/_//g' | sed 's/^\(.\)/\U\1/')
+
+# 함수명 (snake_case)
+FUNCTION_NAME="${HTTP_METHOD,,}_${ENDPOINT_NAME}"
+
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}FastAPI 엔드포인트 추가${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+info "엔드포인트: $ENDPOINT_NAME"
+info "HTTP 메서드: $HTTP_METHOD"
+info "설명: $DESCRIPTION"
+echo ""
+
+# 1. schemas.py에 Pydantic 스키마 추가 (POST/PUT 메서드일 때)
+if [ "$HTTP_METHOD" = "POST" ] || [ "$HTTP_METHOD" = "PUT" ]; then
+    SCHEMAS_FILE="$PROJECT_ROOT/app/schemas.py"
+
+    if [ ! -f "$SCHEMAS_FILE" ]; then
+        info "schemas.py 파일을 생성합니다."
+        cat > "$SCHEMAS_FILE" << 'EOF'
+"""Pydantic 스키마 모델."""
+
+from pydantic import BaseModel
+
+
+class HealthResponse(BaseModel):
+    """헬스 체크 응답."""
+
+    status: str
+    version: str
+EOF
+    fi
+
+    # schemas.py에 새 스키마 추가
+    SCHEMA_CONTENT=$(cat << EOF
+
+class ${SCHEMA_CLASS}Request(BaseModel):
+    """${DESCRIPTION} 요청."""
+
+    pass  # TODO: 필드 추가
+
+
+class ${SCHEMA_CLASS}Response(BaseModel):
+    """${DESCRIPTION} 응답."""
+
+    id: int
+    pass  # TODO: 필드 추가
+EOF
+)
+
+    echo "$SCHEMA_CONTENT" >> "$SCHEMAS_FILE"
+    success "Pydantic 스키마 추가: $SCHEMAS_FILE"
+fi
+
+# 2. API v1 라우트에 엔드포인트 추가
+ROUTES_FILE="$PROJECT_ROOT/app/api/v1/routes.py"
+
+ROUTE_CONTENT=$(cat << EOF
+
+@router.${HTTP_METHOD,,}("/${ENDPOINT_NAME}")
+async def $FUNCTION_NAME():
+    """${DESCRIPTION}."""
+    # TODO: 비즈니스 로직 구현
+    return {"message": "TODO: $DESCRIPTION 구현"}
+EOF
+)
+
+echo "$ROUTE_CONTENT" >> "$ROUTES_FILE"
+success "API 라우트 추가: $ROUTES_FILE"
+
+# 3. pytest 테스트 생성
+TEST_FILE="$PROJECT_ROOT/tests/test_${ENDPOINT_NAME}.py"
+
+TEST_CONTENT=$(cat << EOF
+"""${ENDPOINT_NAME} API 테스트."""
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+
+client = TestClient(app)
+
+
+def test_${FUNCTION_NAME}():
+    """${DESCRIPTION} 엔드포인트 테스트."""
+    response = client.${HTTP_METHOD,,}("/api/v1/${ENDPOINT_NAME}")
+    assert response.status_code == 200
+    # TODO: 추가 assertion 작성
+EOF
+)
+
+echo "$TEST_CONTENT" > "$TEST_FILE"
+success "테스트 파일 생성: $TEST_FILE"
+
+echo ""
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+info "검증 시작..."
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# 4. pytest 실행
+cd "$PROJECT_ROOT"
+if ! uv run pytest -v "$TEST_FILE"; then
+    warning "테스트 실패. 코드를 검토하세요."
+else
+    success "pytest 통과"
+fi
+
+echo ""
+
+# 5. Ruff 검사
+if ! uv run ruff check --fix "$ROUTES_FILE" "$TEST_FILE"; then
+    warning "Ruff 검사 실패."
+else
+    success "Ruff 검사 통과"
+fi
+
+echo ""
+
+# 6. Ruff 포맷팅
+if ! uv run ruff format "$ROUTES_FILE" "$TEST_FILE"; then
+    warning "Ruff 포맷팅 실패."
+else
+    success "Ruff 포맷팅 완료"
+fi
+
+echo ""
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+success "엔드포인트 생성 완료!"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+echo ""
+info "생성된 파일:"
+echo "  - $ROUTES_FILE"
+[ "$HTTP_METHOD" = "POST" ] || [ "$HTTP_METHOD" = "PUT" ] && echo "  - $SCHEMAS_FILE"
+echo "  - $TEST_FILE"
+
+echo ""
+warning "다음 항목을 완료하세요:"
+echo "  1. $ROUTES_FILE의 엔드포인트 구현"
+[ "$HTTP_METHOD" = "POST" ] || [ "$HTTP_METHOD" = "PUT" ] && echo "  2. Pydantic 스키마 필드 추가"
+echo "  3. $TEST_FILE의 테스트 케이스 작성"
+echo "  4. 모든 테스트가 통과하는지 확인: uv run pytest -v"
+
+exit 0
