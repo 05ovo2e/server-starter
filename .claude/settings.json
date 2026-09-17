@@ -1,0 +1,14 @@
+{
+    "hooks": {
+        "Notification": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "terminal-notifier -title 'Claude Code' -message 'Claude Code가 입력을 기다리고 있습니다.' -sound default"
+                    }
+                ]
+            }
+        ]
+    }
+}
